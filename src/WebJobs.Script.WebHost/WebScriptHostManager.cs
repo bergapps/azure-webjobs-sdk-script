@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -11,6 +12,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
+using System.Web.Hosting;
 using Microsoft.AspNet.WebHooks;
 using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Azure.WebJobs.Host.Loggers;
@@ -25,14 +27,43 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
         private static Lazy<MethodInfo> _getWebHookDataMethod = new Lazy<MethodInfo>(CreateGetWebHookDataMethodInfo);
         private readonly IMetricsLogger _metricsLogger;
         private readonly SecretManager _secretManager;
+        private readonly WebHostSettings _webHostSettings;
+        private readonly object _syncLock = new object();
+        private bool _warmupComplete = false;
+        private bool _hostStarted = false;
 
-        public WebScriptHostManager(ScriptHostConfiguration config, SecretManager secretManager) : base(config)
+        public WebScriptHostManager(ScriptHostConfiguration config, SecretManager secretManager, WebHostSettings webHostSettings) : base(config)
         {
             _metricsLogger = new WebHostMetricsLogger();
             _secretManager = secretManager;
+            _webHostSettings = webHostSettings;
         }
 
         private IDictionary<string, FunctionDescriptor> HttpFunctions { get; set; }
+
+        public bool Initialized
+        {
+            get
+            {
+                if (InStandbyMode)
+                {
+                    return _warmupComplete;
+                }
+                else
+                {
+                    return _hostStarted;
+                }
+            }
+        }
+
+        public static bool InStandbyMode
+        {
+            get
+            {
+                string value = Environment.GetEnvironmentVariable("WEBSITE_STANDBY_MODE");
+                return !string.IsNullOrEmpty(value) && string.Compare("1", value) == 0;
+            }
+        }
 
         public async Task<HttpResponseMessage> HandleRequestAsync(FunctionDescriptor function, HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -57,6 +88,72 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             }
 
             return response;
+        }
+
+        public void Initialize()
+        {
+            lock (_syncLock)
+            {
+                if (InStandbyMode)
+                {
+                    if (!_warmupComplete)
+                    {
+                        Warmup();
+                        _warmupComplete = true;
+                    }
+                }
+                else if (!_hostStarted)
+                {
+                    if (!_webHostSettings.IsSelfHost)
+                    {
+                        HostingEnvironment.QueueBackgroundWorkItem((ct) => RunAndBlock(ct));
+                    }
+                    else
+                    {
+                        Task.Run(() => RunAndBlock());
+                    }
+
+                    _hostStarted = true;
+                }
+            }
+        }
+
+        private static void Warmup()
+        {
+            string rootPath = Path.Combine(Path.GetTempPath(), "FunctionsStandby");
+            if (Directory.Exists(rootPath))
+            {
+                Directory.Delete(rootPath, true);
+            }
+            Directory.CreateDirectory(rootPath);
+
+            string content = ReadResourceString("Test.host.json");
+            File.WriteAllText(Path.Combine(rootPath, "host.json"), content);
+
+            string functionPath = Path.Combine(rootPath, "Test");
+            Directory.CreateDirectory(functionPath);
+            content = ReadResourceString("Test.function.json");
+            File.WriteAllText(Path.Combine(functionPath, "function.json"), content);
+
+            content = ReadResourceString("Test.run.csx");
+            File.WriteAllText(Path.Combine(functionPath, "run.csx"), content);
+
+            ScriptHostConfiguration config = new ScriptHostConfiguration
+            {
+                RootScriptPath = rootPath
+            };
+            config.HostConfig.StorageConnectionString = null;
+            config.HostConfig.DashboardConnectionString = null;
+            using (ScriptHost host = ScriptHost.Create(config))
+            {
+                host.Start();
+                var arguments = new Dictionary<string, object>
+                {
+                    { "input", "{}" }
+                };
+                host.CallAsync("Test", arguments).Wait();
+                host.Stop();
+            }
         }
 
         private static MethodInfo CreateGetWebHookDataMethodInfo()
@@ -98,6 +195,16 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             arguments.Add(triggerParameter.Name, triggerArgument);
 
             return arguments;
+        }
+
+        private static string ReadResourceString(string fileName)
+        {
+            string resourcePath = string.Format("Microsoft.Azure.WebJobs.Script.WebHost.Resources.{0}", fileName);
+            Assembly assembly = Assembly.GetExecutingAssembly();
+            using (StreamReader reader = new StreamReader(assembly.GetManifestResourceStream(resourcePath)))
+            {
+                return reader.ReadToEnd();
+            }
         }
 
         private static object GetWebHookData(Type dataType, WebHookHandlerContext context)

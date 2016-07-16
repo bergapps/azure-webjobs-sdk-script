@@ -2,8 +2,6 @@
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
 using System;
-using System.Threading.Tasks;
-using System.Web.Hosting;
 using Autofac;
 using Microsoft.Azure.WebJobs.Script.WebHost.WebHooks;
 
@@ -42,20 +40,13 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             secretManager.GetHostSecrets();
             builder.RegisterInstance<SecretManager>(secretManager);
 
-            WebScriptHostManager scriptHostManager = new WebScriptHostManager(scriptHostConfig, secretManager);
+            WebScriptHostManager scriptHostManager = new WebScriptHostManager(scriptHostConfig, secretManager, settings);
             builder.RegisterInstance<WebScriptHostManager>(scriptHostManager);
 
             WebHookReceiverManager webHookReceiverManager = new WebHookReceiverManager(secretManager);
             builder.RegisterInstance<WebHookReceiverManager>(webHookReceiverManager);
 
-            if (!settings.IsSelfHost)
-            {
-                HostingEnvironment.QueueBackgroundWorkItem((ct) => scriptHostManager.RunAndBlock(ct));
-            }
-            else
-            {
-                Task.Run(() => scriptHostManager.RunAndBlock());
-            }
+            scriptHostManager.Initialize();
         }
     }
 }

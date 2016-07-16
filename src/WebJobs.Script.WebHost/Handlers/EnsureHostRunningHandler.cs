@@ -29,7 +29,14 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Handlers
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             // some routes do not require the host to be running (most do)
-            bool bypassHostCheck = request.RequestUri.LocalPath.Trim('/').ToLowerInvariant().EndsWith("admin/host/status");
+            // in standby mode, we don't want to wait for host start
+            bool bypassHostCheck = request.RequestUri.LocalPath.Trim('/').ToLowerInvariant().EndsWith("admin/host/status") ||
+                WebScriptHostManager.InStandbyMode;
+
+            if (!_scriptHostManager.Initialized)
+            {
+                _scriptHostManager.Initialize();
+            }
 
             if (!bypassHostCheck)
             {

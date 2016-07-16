@@ -347,6 +347,9 @@
     <None Include="App_Data\secrets\WebHook-Generic-CSharp.json" />
     <None Include="App_Data\secrets\WebHook-Generic.json" />
     <None Include="Properties\PublishProfiles\FileSystem.pubxml" />
+    <EmbeddedResource Include="Resources\Test\function.json" />
+    <EmbeddedResource Include="Resources\Test\host.json" />
+    <EmbeddedResource Include="Resources\Test\run.csx" />
     <None Include="Web.Debug.config">
       <DependentUpon>Web.config</DependentUpon>
     </None>
